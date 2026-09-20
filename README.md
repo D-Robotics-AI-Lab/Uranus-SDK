@@ -21,8 +21,12 @@ pip install uranus-sdk
 ```python
 import os
 import numpy as np
-from uranus.skeleton import CameraSpec, EESpec, SkeletonSpec
-from uranus_sdk import UranusSimulationSession
+from uranus_sdk import (
+    UranusSimulationSession,
+    CameraSpec,
+    EESpec,
+    SkeletonSpec,
+)
 
 os.environ["URANUS_BASE_URL"] = "http://localhost:8000"
 os.environ["URANUS_API_KEY"] = "sk-your-token"  # optional

@@ -4,11 +4,9 @@ Construction triggers ``create``; ``step`` returns RGB frames; ``finish``
 releases the session.  Server URL and auth are read from environment
 variables ``URANUS_BASE_URL`` and ``URANUS_API_KEY``.
 
-The Spec classes (``CameraSpec``, ``EESpec``, ``SkeletonSpec``) are imported
-from ``uranus.skeleton`` when the full Uranus package is installed.  This
-module also provides lightweight fallback dataclasses so the SDK can be used
-standalone (without the heavy ``uranus`` model package) — the fallbacks are
-structurally identical and serialize to the same JSON.
+Spec classes (``CameraSpec``, ``EESpec``, ``SkeletonSpec``) are defined
+in :mod:`uranus_sdk.specs` and are structurally compatible with the
+``uranus.skeleton`` Spec classes used by the server.
 """
 
 from __future__ import annotations
@@ -16,7 +14,7 @@ from __future__ import annotations
 import base64
 import json
 import os
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -24,45 +22,12 @@ import cv2
 import numpy as np
 import requests
 
-# ---------------------------------------------------------------------------
-# Spec classes — aligned with uranus.skeleton.specs
-# ---------------------------------------------------------------------------
-
-try:
-    # Use the real Spec classes from the Uranus package when available.
-    from uranus.skeleton import CameraSpec, EESpec, GripperKeypointOverride, SkeletonSpec
-except ImportError:  # pragma: no cover — fallback when uranus is not installed
-    @dataclass(frozen=True)
-    class CameraSpec:
-        """One XML-defined camera of the rig."""
-        name: str
-
-        def validate(self) -> None:
-            assert bool(self.name), "camera name must be non-empty"
-
-    @dataclass(frozen=True)
-    class EESpec:
-        """One end-effector SH sphere: anchor object + radius source."""
-        object_type: str
-        object_name: str
-        radius_mode: str
-        pad_bodies: tuple[str, str] | None = None
-        radius: float | None = None
-        sh_correction: np.ndarray | None = None
-
-    @dataclass(frozen=True)
-    class GripperKeypointOverride:
-        ee_object_type: str
-        ee_object_name: str
-        finger_bodies: tuple[str, str]
-        closing_axis: int = 1
-
-    @dataclass(frozen=True)
-    class SkeletonSpec:
-        mode: str = "full_tree"
-        chains: tuple[tuple[str, ...], ...] = ()
-        skip_bodies: tuple[str, ...] = ()
-        gripper_keypoint_overrides: tuple[GripperKeypointOverride, ...] = ()
+from uranus_sdk.specs import (
+    CameraSpec,
+    EESpec,
+    GripperKeypointOverride,
+    SkeletonSpec,
+)
 
 
 # ---------------------------------------------------------------------------
