@@ -130,10 +130,11 @@ class UranusSimulationSession:
         self,
         *,
         prompt: str,
-        mjcf_path: str | Path,
         cameras: Sequence[CameraSpec],
         ref_cam_images: Sequence[str | Path | bytes | np.ndarray],
         ref_qpos: list[float] | np.ndarray,
+        mjcf_path: str | Path | None = None,
+        mjcf_xml: str | None = None,
         robot2world_transform: np.ndarray | None = None,
         end_effectors: Sequence[EESpec] | None = None,
         skeleton: SkeletonSpec | None = None,
@@ -146,7 +147,16 @@ class UranusSimulationSession:
 
         Args:
             prompt:  Natural-language task description.
+            cameras:  Ordered :class:`CameraSpec` list; order fixes output
+                frame ordering for the whole session.
+            ref_cam_images:  One reference image per camera.  Each entry may
+                be a file path, raw bytes, or an RGB ``ndarray``.
+            ref_qpos:  Complete MuJoCo ``qpos`` vector for the reference
+                frame (length = ``model.nq``).
             mjcf_path:  Path to the MJCF XML file (read and sent inline).
+                Mutually exclusive with *mjcf_xml*.
+            mjcf_xml:  Inline MJCF XML string (use when loading from a URL
+                via :func:`load_sample`).  Mutually exclusive with *mjcf_path*.
             cameras:  Ordered :class:`CameraSpec` list; order fixes output
                 frame ordering for the whole session.
             ref_cam_images:  One reference image per camera.  Each entry may
@@ -177,7 +187,12 @@ class UranusSimulationSession:
         self._session_id: str | None = None
 
         # --- read MJCF ---
-        mjcf_xml = Path(mjcf_path).read_text(encoding="utf-8")
+        if mjcf_xml is not None:
+            pass  # use inline string directly
+        elif mjcf_path is not None:
+            mjcf_xml = Path(mjcf_path).read_text(encoding="utf-8")
+        else:
+            raise ValueError("Either mjcf_path or mjcf_xml must be provided")
         camera_names = [c.name for c in cameras]
 
         # --- ref_qpos -> frame dict ---

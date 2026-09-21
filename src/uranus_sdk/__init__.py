@@ -7,6 +7,7 @@ from uranus_sdk.specs import (
     GripperKeypointOverride,
     SkeletonSpec,
 )
+from uranus_sdk.dataset import load_sample
 
 __all__ = [
     "UranusSimulationSession",
@@ -15,5 +16,6 @@ __all__ = [
     "EESpec",
     "GripperKeypointOverride",
     "SkeletonSpec",
+    "load_sample",
 ]
 __version__ = "0.1.0"

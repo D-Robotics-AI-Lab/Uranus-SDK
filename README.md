@@ -7,62 +7,50 @@ multipart parsing, session management, and authentication.
 ## Installation
 
 ```bash
-uv add uranus-sdk
-```
-
-Or with pip:
-
-```bash
 pip install uranus-sdk
 ```
 
-## Quick Start
+## Quick Start (simplest)
+
+Load a sample from HuggingFace, run inference, save to mp4:
 
 ```python
 import os
+import cv2
 import numpy as np
-from uranus_sdk import (
-    UranusSimulationSession,
-    CameraSpec,
-    EESpec,
-    SkeletonSpec,
-)
+from uranus_sdk import load_sample, UranusSimulationSession
 
 os.environ["URANUS_BASE_URL"] = "http://localhost:8000"
 os.environ["URANUS_API_KEY"] = "sk-your-token"  # optional
 
-with UranusSimulationSession(
-    prompt="pick up the cup",
-    mjcf_path="mjcf/g1_no_mesh.xml",
-    cameras=[
-        CameraSpec(name="head"),
-        CameraSpec(name="hand_left"),
-        CameraSpec(name="hand_right"),
-    ],
-    ref_cam_images=[
-        "ref_images/head.png",
-        "ref_images/hand_left.png",
-        "ref_images/hand_right.png",
-    ],
-    ref_qpos=np.load("ref_qpos.npy"),
-    end_effectors=[
-        EESpec(
-            object_type="site",
-            object_name="gripper_center",
-            radius_mode="pad_pair",
-            pad_bodies=("left_Left_Pad_Link", "left_Right_Pad_Link"),
-        ),
-    ],
-    skeleton=SkeletonSpec(
-        mode="chains",
-        chains=(("Link1_l", "Link2_l", "Link3_l"),),
-    ),
-) as session:
-    action = np.load("action.npy")  # (T, nq)
-    for start in range(0, len(action), 4):
-        frames = session.step(qpos=action[start:start + 4])
-        # frames = {"head": [(384, 640, 3) RGB uint8, ...], ...}
+# 1. Load sample from HuggingFace Hub (set HF_ENDPOINT to use a mirror)
+sample = load_sample("D-Robotics/Uranus-Demo-Data/resolve/main/rc-table30-v1__rc-aloha/000000",
+                     num_chunks=8)
+
+# 2. Create session + run step loop
+with UranusSimulationSession(**sample["create"]) as session:
+    all_frames = {}
+    for step in sample["steps"]:
+        frames = session.step(**step)
+        for cam, imgs in frames.items():
+            all_frames.setdefault(cam, []).extend(imgs)
+
+# 3. Save to mp4
+for cam, imgs in all_frames.items():
+    h, w = imgs[0].shape[:2]
+    writer = cv2.VideoWriter(f"{cam}.mp4", cv2.VideoWriter_fourcc(*"mp4v"), 10, (w, h))
+    for img in imgs:
+        writer.write(cv2.cvtColor(img, cv2.COLOR_RGB2BGR))
+    writer.release()
 ```
+
+## Configuration
+
+| Variable | Required | Default | Description |
+|---|---|---|---|
+| `URANUS_BASE_URL` | No | `http://localhost:8000` | Server address |
+| `URANUS_API_KEY` | No | -- | Bearer token |
+| `HF_ENDPOINT` | No | `https://huggingface.co` | HuggingFace endpoint (use `https://hf-mirror.com` for mirror) |
 
 ## Configuration
 
