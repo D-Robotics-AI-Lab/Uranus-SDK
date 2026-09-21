@@ -154,7 +154,7 @@ def load_sample(
         "robot2world_transform": r2w,
         "end_effectors": end_effectors,
         "skeleton": skeleton,
-        "target_size": (int(meta.get("height", 384)), int(meta.get("width", 640))),
+        "target_size": (384, 640),
         "seed": 1,
     }
 

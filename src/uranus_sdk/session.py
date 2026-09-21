@@ -25,7 +25,6 @@ import requests
 from uranus_sdk.specs import (
     CameraSpec,
     EESpec,
-    GripperKeypointOverride,
     SkeletonSpec,
 )
 
@@ -65,13 +64,25 @@ def _spec_to_dict(obj: Any) -> Any:
     return obj
 
 
-def _load_image(img: str | Path | bytes | np.ndarray) -> bytes:
-    """Accept a file path, raw bytes, or RGB ndarray and return PNG bytes."""
+def _load_image(img: str | Path | bytes | np.ndarray, target_size: tuple[int, int]) -> bytes:
+    """Accept a file path, raw bytes, or RGB ndarray, resize to target_size
+    (height, width), and return PNG bytes."""
+    target_h, target_w = target_size
+
+    # Decode to BGR ndarray
     if isinstance(img, (str, Path)):
-        return Path(img).read_bytes()
-    if isinstance(img, np.ndarray):
-        return cv2.imencode(".png", cv2.cvtColor(img, cv2.COLOR_RGB2BGR))[1].tobytes()
-    return img  # assume raw bytes
+        raw = Path(img).read_bytes()
+        bgr = cv2.imdecode(np.frombuffer(raw, dtype=np.uint8), cv2.IMREAD_COLOR)
+    elif isinstance(img, np.ndarray):
+        bgr = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+    else:
+        bgr = cv2.imdecode(np.frombuffer(img, dtype=np.uint8), cv2.IMREAD_COLOR)
+
+    # Resize to target resolution
+    bgr = cv2.resize(bgr, (target_w, target_h), interpolation=cv2.INTER_LINEAR)
+
+    # Encode as PNG
+    return cv2.imencode(".png", bgr)[1].tobytes()
 
 
 # ---------------------------------------------------------------------------
@@ -204,8 +215,8 @@ class UranusSimulationSession:
                 robot2world_transform, dtype=np.float64
             ).tolist()
 
-        # --- ref_cam_images -> bytes ---
-        ref_images_bytes = [_load_image(img) for img in ref_cam_images]
+        # --- ref_cam_images -> resized bytes (target_size) ---
+        ref_images_bytes = [_load_image(img, target_size) for img in ref_cam_images]
 
         # --- Spec -> dict ---
         ee_dicts = [_spec_to_dict(ee) for ee in (end_effectors or [])]
