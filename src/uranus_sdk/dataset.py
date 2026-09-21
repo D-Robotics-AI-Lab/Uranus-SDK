@@ -1,7 +1,15 @@
-"""Load sample data from HuggingFace Hub via direct HTTP (no huggingface_hub).
+"""Load sample data from a local directory or an HTTP URL.
 
 Usage:
-    sample = load_sample("D-Robotics/Uranus-Demo-Data/resolve/main/rc-table30-v1__rc-aloha/000000")
+    # From HuggingFace Hub (HTTP):
+    sample = load_sample("https://huggingface.co/datasets/D-Robotics/Uranus-Demo-Data/resolve/main/rc-table30-v1__rc-aloha/000000")
+
+    # From a mirror:
+    sample = load_sample("https://hf-mirror.com/datasets/D-Robotics/Uranus-Demo-Data/resolve/main/rc-table30-v1__rc-aloha/000000")
+
+    # From a local directory:
+    sample = load_sample("/path/to/sample/000000")
+
     # sample["create"] → kwargs for UranusSimulationSession
     # sample["steps"]  → list of {qpos, robot2world_transforms} dicts
 """
@@ -9,8 +17,9 @@ Usage:
 from __future__ import annotations
 
 import json
-import os
+from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 import numpy as np
 import requests
@@ -22,43 +31,75 @@ from uranus_sdk.specs import (
     SkeletonSpec,
 )
 
-_HF_BASE = os.environ.get("HF_ENDPOINT", "https://huggingface.co").rstrip("/") + "/datasets"
+
+# ---------------------------------------------------------------------------
+# I/O helpers — local or HTTP, auto-detected by the root path prefix
+# ---------------------------------------------------------------------------
+
+class _LocalReader:
+    """Read files from a local directory."""
+
+    def __init__(self, root: str | Path) -> None:
+        self._root = Path(root)
+
+    def read_text(self, filename: str) -> str:
+        return (self._root / filename).read_text(encoding="utf-8")
+
+    def read_bytes(self, filename: str) -> bytes:
+        return (self._root / filename).read_bytes()
 
 
-def _hf_url(hf_path: str, filename: str) -> str:
-    """Build a HuggingFace direct-download URL.
+class _HttpReader:
+    """Download files from an HTTP base URL (e.g. HuggingFace Hub)."""
 
-    ``hf_path`` is everything after ``huggingface.co/datasets/``, e.g.
-    ``"D-Robotics/Uranus-Demo-Data/resolve/main/rc-table30-v1__rc-aloha/000000"``.
-    """
-    return f"{_HF_BASE}/{hf_path}/{filename}"
+    def __init__(self, base_url: str) -> None:
+        self._base = base_url.rstrip("/")
+
+    def _url(self, filename: str) -> str:
+        """Join the base URL with a filename, preserving path slashes."""
+        # urljoin needs a trailing slash on the base for relative paths to work
+        return f"{self._base}/{quote(filename, safe='/')}"
+
+    def read_text(self, filename: str) -> str:
+        resp = requests.get(self._url(filename), timeout=60)
+        resp.raise_for_status()
+        return resp.text
+
+    def read_bytes(self, filename: str) -> bytes:
+        resp = requests.get(self._url(filename), timeout=300)
+        resp.raise_for_status()
+        return resp.content
 
 
-def _download_text(hf_path: str, filename: str) -> str:
-    """Download a text file from HF Hub."""
-    resp = requests.get(_hf_url(hf_path, filename), timeout=60)
-    resp.raise_for_status()
-    return resp.text
+def _make_reader(root: str) -> _LocalReader | _HttpReader:
+    """Create a reader based on whether *root* is an HTTP URL or a local path."""
+    if root.startswith(("http://", "https://")):
+        return _HttpReader(root)
+    return _LocalReader(root)
 
 
-def _download_bytes(hf_path: str, filename: str) -> bytes:
-    """Download a binary file from HF Hub."""
-    resp = requests.get(_hf_url(hf_path, filename), timeout=120)
-    resp.raise_for_status()
-    return resp.content
-
+# ---------------------------------------------------------------------------
+# load_sample
+# ---------------------------------------------------------------------------
 
 def load_sample(
-    hf_path: str,
+    root: str,
     *,
     num_chunks: int | None = None,
     step_length: int = 4,
 ) -> dict[str, Any]:
-    """Load a sample from HuggingFace Hub and build SDK-ready data.
+    """Load a sample from a local directory or an HTTP URL and build SDK-ready data.
 
     Args:
-        hf_path:    The path after ``huggingface.co/datasets/``, e.g.
-                    ``"D-Robotics/Uranus-Demo-Data/resolve/main/rc-table30-v1__rc-aloha/000000"``.
+        root:       Sample root path. Either:
+
+                    * An HTTP URL, e.g.
+                      ``"https://huggingface.co/datasets/D-Robotics/Uranus-Demo-Data/resolve/main/rc-table30-v1__rc-aloha/000000"``
+                    * A local directory, e.g.
+                      ``"/path/to/sample/000000"``
+
+                    The root must contain ``meta.json``, ``temporal.json``,
+                    the MJCF file, and reference images.
         num_chunks: Number of step chunks to generate. ``None`` → all available.
         step_length: Frames per step (default 4, = temporal_interval).
 
@@ -70,39 +111,31 @@ def load_sample(
 
     Example::
 
-        sample = load_sample("D-Robotics/Uranus-Demo-Data/resolve/main/rc-table30-v1__rc-aloha/000000")
+        # From HuggingFace
+        sample = load_sample("https://huggingface.co/datasets/D-Robotics/Uranus-Demo-Data/resolve/main/rc-table30-v1__rc-aloha/000000")
+
+        # From local disk
+        sample = load_sample("/data/samples/000000")
+
         with UranusSimulationSession(**sample["create"]) as session:
             for step in sample["steps"]:
                 frames = session.step(**step)
     """
-    # --- download meta + temporal ---
-    meta = json.loads(_download_text(hf_path, "meta.json"))
-    temporal = json.loads(_download_text(hf_path, "temporal.json"))
+    reader = _make_reader(root)
+
+    # --- read meta + temporal ---
+    meta = json.loads(reader.read_text("meta.json"))
+    temporal = json.loads(reader.read_text("temporal.json"))
 
     camera_names = list(meta["cameras"])
     cameras = [CameraSpec(name=name) for name in camera_names]
 
-    # --- download MJCF ---
-    mjcf_filename = meta["mjcf_path"]
-    # mjcf_path may be relative ("mjcf/robot.xml") — strip any dir prefix
-    if "/" in mjcf_filename:
-        mjcf_filename = mjcf_filename.split("/")[-1]
-    # try with the original path first, then fallback to basename
-    try:
-        mjcf_xml = _download_text(hf_path, meta["mjcf_path"])
-    except requests.HTTPError:
-        mjcf_xml = _download_text(hf_path, f"mjcf/{mjcf_filename}")
+    # --- read MJCF ---
+    mjcf_path = meta["mjcf_path"]
+    mjcf_xml = reader.read_text(mjcf_path)
 
-    # --- download reference images ---
-    ref_cam_images = []
-    for name in camera_names:
-        img_path = meta["ref_cam_images"][name]
-        try:
-            ref_cam_images.append(_download_bytes(hf_path, img_path))
-        except requests.HTTPError:
-            # fallback: strip directory prefix
-            basename = img_path.split("/")[-1]
-            ref_cam_images.append(_download_bytes(hf_path, f"ref_images/{basename}"))
+    # --- read reference images ---
+    ref_cam_images = [reader.read_bytes(meta["ref_cam_images"][name]) for name in camera_names]
 
     # --- build end_effectors ---
     end_effectors = []
