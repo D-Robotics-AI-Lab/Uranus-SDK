@@ -193,8 +193,9 @@ def load_sample(
 
     # --- build steps ---
     available = len(states) - 1  # frame 0 is reference
-    if num_chunks is None:
-        num_chunks = available // step_length
+    max_chunks = available // step_length
+    if num_chunks is None or num_chunks > max_chunks:
+        num_chunks = max_chunks
 
     steps = []
     for i in range(num_chunks):
