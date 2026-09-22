@@ -17,6 +17,7 @@ Usage:
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
@@ -53,6 +54,12 @@ class _HttpReader:
     """Download files from an HTTP base URL (e.g. HuggingFace Hub)."""
 
     def __init__(self, base_url: str) -> None:
+        # Honor HF_ENDPOINT: if the URL points to huggingface.co and the env
+        # var is set, swap the host so the request goes through the mirror.
+        hf_endpoint = os.environ.get("HF_ENDPOINT")
+        if hf_endpoint and "huggingface.co" in base_url:
+            base_url = base_url.replace("https://huggingface.co", hf_endpoint.rstrip("/"))
+            base_url = base_url.replace("http://huggingface.co", hf_endpoint.rstrip("/"))
         self._base = base_url.rstrip("/")
 
     def _url(self, filename: str) -> str:
