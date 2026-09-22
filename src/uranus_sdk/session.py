@@ -64,9 +64,15 @@ def _spec_to_dict(obj: Any) -> Any:
     return obj
 
 
-def _load_image(img: str | Path | bytes | np.ndarray, target_size: tuple[int, int]) -> bytes:
-    """Accept a file path, raw bytes, or RGB ndarray, resize to target_size
-    (height, width), and return PNG bytes."""
+def _load_image(
+    img: str | Path | bytes | np.ndarray, target_size: tuple[int, int]
+) -> tuple[bytes, tuple[int, int]]:
+    """Decode image, resize to target_size, and return (resized PNG bytes, original_size).
+
+    The original size is returned so the caller can scale MJCF intrinsics
+    from original resolution to target resolution — the server will see
+    raw_sizes == target_size and skip its own intrinsics scaling.
+    """
     target_h, target_w = target_size
 
     # Decode to BGR ndarray
@@ -78,11 +84,50 @@ def _load_image(img: str | Path | bytes | np.ndarray, target_size: tuple[int, in
     else:
         bgr = cv2.imdecode(np.frombuffer(img, dtype=np.uint8), cv2.IMREAD_COLOR)
 
-    # Resize to target resolution
-    bgr = cv2.resize(bgr, (target_w, target_h), interpolation=cv2.INTER_LINEAR)
+    orig_h, orig_w = bgr.shape[:2]
 
-    # Encode as PNG
-    return cv2.imencode(".png", bgr)[1].tobytes()
+    # Resize to target resolution
+    if (orig_h, orig_w) != (target_h, target_w):
+        bgr = cv2.resize(bgr, (target_w, target_h), interpolation=cv2.INTER_LINEAR)
+
+    return cv2.imencode(".png", bgr)[1].tobytes(), (orig_h, orig_w)
+
+
+def _scale_mjcf_intrinsics(
+    mjcf_xml: str, orig_sizes: dict[str, tuple[int, int]], target_size: tuple[int, int]
+) -> str:
+    """Scale MJCF <camera> focal/principal from original resolution to target.
+
+    The server reads intrinsics from ``model.cam_intrinsic`` (populated by the
+    MJCF ``focal``/``principal`` attributes) and scales them based on the
+    decoded image dimensions (``raw_sizes``). By pre-resizing images to
+    target_size, the server sees ``raw_sizes == target_size`` and skips
+    scaling. We must therefore scale the intrinsics in the XML ourselves.
+    """
+    import xml.etree.ElementTree as ET
+
+    target_h, target_w = target_size
+    root = ET.fromstring(mjcf_xml)
+
+    for cam_elem in root.iter("camera"):
+        name = cam_elem.get("name")
+        if name not in orig_sizes:
+            continue
+        orig_h, orig_w = orig_sizes[name]
+        scale_x = target_w / orig_w
+        scale_y = target_h / orig_h
+
+        focal = cam_elem.get("focal")
+        if focal:
+            fx, fy = (float(x) for x in focal.split())
+            cam_elem.set("focal", f"{fx * scale_x:.12g} {fy * scale_y:.12g}")
+
+        principal = cam_elem.get("principal")
+        if principal:
+            cx, cy = (float(x) for x in principal.split())
+            cam_elem.set("principal", f"{cx * scale_x:.12g} {cy * scale_y:.12g}")
+
+    return ET.tostring(root, encoding="unicode")
 
 
 # ---------------------------------------------------------------------------
@@ -215,8 +260,16 @@ class UranusSimulationSession:
                 robot2world_transform, dtype=np.float64
             ).tolist()
 
-        # --- ref_cam_images -> resized bytes (target_size) ---
-        ref_images_bytes = [_load_image(img, target_size) for img in ref_cam_images]
+        # --- ref_cam_images -> resized bytes + track original sizes ---
+        resized_images: list[bytes] = []
+        orig_sizes: dict[str, tuple[int, int]] = {}
+        for cam, img in zip(cameras, ref_cam_images):
+            img_bytes, orig_size = _load_image(img, target_size)
+            resized_images.append(img_bytes)
+            orig_sizes[cam.name] = orig_size
+
+        # --- scale MJCF intrinsics from original to target resolution ---
+        mjcf_xml = _scale_mjcf_intrinsics(mjcf_xml, orig_sizes, target_size)
 
         # --- Spec -> dict ---
         ee_dicts = [_spec_to_dict(ee) for ee in (end_effectors or [])]
@@ -237,7 +290,7 @@ class UranusSimulationSession:
             "payload": payload,
             "attachments": {
                 "ref_cam_images": [
-                    base64.b64encode(img).decode() for img in ref_images_bytes
+                    base64.b64encode(img).decode() for img in resized_images
                 ]
             },
         }
