@@ -1,6 +1,6 @@
 [project]
 name = "uranus-sdk"
-version = "0.1.0"
+version = "0.1.1"
 description = "Python SDK for the Uranus video generation serving API"
 readme = "README.md"
 authors = [
