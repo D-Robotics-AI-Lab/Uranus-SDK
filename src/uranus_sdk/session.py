@@ -28,6 +28,9 @@ from uranus_sdk.specs import (
     SkeletonSpec,
 )
 
+#: Default Uranus serving endpoint, used when ``URANUS_BASE_URL`` is unset.
+DEFAULT_BASE_URL = "https://uranus.d-robotics.cc/api/v1"
+
 
 # ---------------------------------------------------------------------------
 # Error
@@ -131,7 +134,7 @@ def _scale_mjcf_intrinsics(
 
 
 # ---------------------------------------------------------------------------
-# Multipart decode
+# Response decode
 # ---------------------------------------------------------------------------
 
 def _decode_multipart(
@@ -165,6 +168,47 @@ def _decode_multipart(
     return info, frames
 
 
+def _decode_json(
+    resp: requests.Response,
+) -> tuple[dict[str, Any], dict[str, list[np.ndarray]]]:
+    """Parse the JSON step response used by serving v2.
+
+    The response shape is ``{"session_id": ..., "output": {"obs":
+    {camera: [base64 PNG, ...]}}}``.  Returns the same ``(info, frames)``
+    tuple as :func:`_decode_multipart`, with frames in BGR order.
+    """
+    info = resp.json()
+    obs = info.get("output", {}).get("obs", {}) if isinstance(info, dict) else {}
+
+    frames: dict[str, list[np.ndarray]] = {}
+    for cam, encoded in obs.items():
+        imgs: list[np.ndarray] = []
+        for item in encoded:
+            img = cv2.imdecode(
+                np.frombuffer(base64.b64decode(item), dtype=np.uint8),
+                cv2.IMREAD_COLOR,
+            )
+            if img is None:
+                raise UranusSDKError(
+                    f"Failed to decode frame for camera {cam!r}"
+                )
+            imgs.append(img)
+        frames[str(cam)] = imgs
+    return info, frames
+
+
+def _decode_response(
+    resp: requests.Response,
+) -> tuple[dict[str, Any], dict[str, list[np.ndarray]]]:
+    """Decode either the JSON (serving v2) or multipart (legacy) frame response."""
+    content_type = resp.headers.get("Content-Type", "").lower()
+    if "multipart/" in content_type:
+        return _decode_multipart(resp)
+    if "json" in content_type or resp.content.lstrip().startswith(b"{"):
+        return _decode_json(resp)
+    return _decode_multipart(resp)
+
+
 # ---------------------------------------------------------------------------
 # UranusSimulationSession
 # ---------------------------------------------------------------------------
@@ -177,7 +221,8 @@ class UranusSimulationSession:
     and :meth:`finish` (or use ``with``) to release the session.
 
     Environment variables:
-        ``URANUS_BASE_URL`` — server address (default ``http://localhost:8000``)
+        ``URANUS_BASE_URL`` — server address (default
+        ``https://uranus.d-robotics.cc/api/v1``)
         ``URANUS_API_KEY``  — Bearer token; when set, every request carries
         ``Authorization: Bearer <token>``.
     """
@@ -233,7 +278,7 @@ class UranusSimulationSession:
             UranusSDKError: If the create request fails.
         """
         # --- server config from env ---
-        base_url = os.environ.get("URANUS_BASE_URL", "http://localhost:8000")
+        base_url = os.environ.get("URANUS_BASE_URL", DEFAULT_BASE_URL)
         api_key = os.environ.get("URANUS_API_KEY")
         self._base_url = base_url.rstrip("/")
         self._timeout = timeout
@@ -359,7 +404,7 @@ class UranusSimulationSession:
             timeout=self._timeout,
         )
         self._raise_for_error(resp)
-        _info, bgr_frames = _decode_multipart(resp)
+        _info, bgr_frames = _decode_response(resp)
 
         return {
             cam: [cv2.cvtColor(img, cv2.COLOR_BGR2RGB) for img in imgs]
